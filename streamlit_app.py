@@ -150,27 +150,18 @@ client = OpenAI(
 # =========================
 
 @st.cache_resource
-def load_retriever():
+def load_vectorstore():
 
     embeddings = HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
 
-
-    vectorstore = Chroma(
+    return Chroma(
         persist_directory="chroma_db",
         embedding_function=embeddings
     )
 
-
-    return vectorstore.as_retriever(
-        search_kwargs={
-            "k":3
-        }
-    )
-
-
-retriever = load_retriever()
+vectorstore = load_vectorstore()
 
 
 
@@ -288,139 +279,108 @@ for msg in st.session_state.messages:
 # User Question
 # =========================
 
-
-question = st.chat_input(
-    "Ask your question..."
-)
-
-
+question = st.chat_input("Ask your question...")
 
 if question:
 
-
     st.session_state.messages.append(
         {
-            "role":"user",
-            "content":question
+            "role": "user",
+            "content": question
         }
     )
 
-
     with st.chat_message("user"):
-
         st.write(question)
-
-
 
     with st.chat_message("assistant"):
 
+        with st.spinner("Searching knowledge base..."):
 
-        with st.spinner(
-            "Searching knowledge base..."
-        ):
-
-
-            docs = retriever.invoke(
-                question
+            # Search similar chunks
+            results = vectorstore.similarity_search_with_score(
+                question,
+                k=3
             )
 
+            #st.write(results)
 
+            # No documents found
+            if not results:
+                st.error("The answer is not available in the uploaded handbook.")
+                st.stop()
+
+            # Extract documents
+            docs = [doc for doc, score in results]
+
+            # Merge retrieved chunks
             context = "\n\n".join(
-                [
-                    doc.page_content
-                    for doc in docs
-                ]
+                doc.page_content
+                for doc in docs
             )
 
-
-
+            # Language
             if language == "Arabic":
-
-                lang_instruction = """
-                Answer in Arabic.
-                """
-
+                lang_instruction = "Answer in Arabic."
             else:
+                lang_instruction = "Answer in English."
 
-                lang_instruction = """
-                Answer in English.
-                """
-
-
-
+            # Prompt
             prompt = f"""
+{lang_instruction}
 
-            {lang_instruction}
+You are a University Handbook Assistant.
 
-            Answer only using the context below.
+Use ONLY the information provided in the Context.
 
-            Context:
+If the Context contains the answer, answer clearly and completely.
 
-            {context}
+If the Context does NOT contain enough information to answer the question, reply exactly:
 
+The answer is not available in the uploaded handbook.
 
-            Question:
+Context:
+{context}
 
-            {question}
+Question:
+{question}
 
-            """
-
-
+Answer:
+"""
 
             response = client.chat.completions.create(
-
                 model=model,
-
+                temperature=0,
                 messages=[
                     {
-                        "role":"user",
-                        "content":prompt
+                        "role": "system",
+                        "content": "You are a university handbook assistant. Use only the provided context. If the context contains the answer, answer it. If it does not, reply exactly: The answer is not available in the uploaded handbook."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
                     }
                 ]
-
             )
 
-
-
-            answer = (
-                response
-                .choices[0]
-                .message
-                .content
-            )
-
-
+            answer = response.choices[0].message.content
 
             st.write(answer)
 
+            st.markdown("### 📚 Sources")
 
-
-            st.markdown(
-                """
-                <div class="source">
-
-                📚 Retrieved Source
-
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
+            shown = set()
 
             for doc in docs:
+                source = doc.metadata.get("source", "Unknown")
 
-                st.caption(
-                    doc.metadata.get(
-                        "source",
-                        "Unknown"
-                    )
-                )
-
-
+                if source not in shown:
+                    st.caption(source)
+                    shown.add(source)
 
     st.session_state.messages.append(
         {
-            "role":"assistant",
-            "content":answer
+            "role": "assistant",
+            "content": answer
         }
     )
